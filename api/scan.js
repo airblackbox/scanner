@@ -313,21 +313,41 @@ async function fetchGitHub(url) {
 
   const tree = await resp.json();
 
-  // Filter Python files, skip test/vendor dirs, limit to 50 files for speed
-  const pyFiles = (tree.tree || [])
+  // Filter Python files with smart prioritization
+  const skipDirs = /(?:^|\/)(node_modules|\.git|__pycache__|\.venv|venv|env|site-packages|dist|build|\.egg|\.tox|\.mypy_cache|\.pytest_cache|deprecated|archived|\.eggs)\//;
+  const testDirs = /(?:^|\/)(tests?|testing|e2e|benchmarks?|examples?|docs?|scripts?|migrations?|fixtures?|conftest)\//;
+  const testFiles = /(?:^|\/)(test_|_test\.py|conftest\.py|setup\.py|__main__\.py)/;
+
+  let allPyFiles = (tree.tree || [])
     .filter(f => f.type === "blob" && f.path.endsWith(".py"))
-    .filter(f => !/(node_modules|\.git|__pycache__|\.venv|venv|site-packages|dist\/|build\/|\.egg)/.test(f.path))
+    .filter(f => !skipDirs.test(f.path))
     .filter(f => {
       if (path) return f.path.startsWith(path);
       return true;
-    })
-    .slice(0, 50);
+    });
 
-  if (!pyFiles.length) throw new Error("No Python files found in this repository/path.");
+  if (!allPyFiles.length) throw new Error("No Python files found in this repository/path.");
 
-  // Fetch file contents in parallel (max 50)
-  const files = await Promise.all(
-    pyFiles.map(async (f) => {
+  // Prioritize: source code first, then tests
+  // Try to detect the main package directory (e.g., "haystack/", "crewai/", "langchain/")
+  const srcFiles = allPyFiles.filter(f => !testDirs.test(f.path) && !testFiles.test(f.path));
+  const otherFiles = allPyFiles.filter(f => testDirs.test(f.path) || testFiles.test(f.path));
+
+  // Take up to 150 source files, then fill with test files up to 200 total
+  const MAX_FILES = 200;
+  const MAX_SRC = 150;
+  const selected = [
+    ...srcFiles.slice(0, MAX_SRC),
+    ...otherFiles.slice(0, MAX_FILES - Math.min(srcFiles.length, MAX_SRC)),
+  ].slice(0, MAX_FILES);
+
+  // Fetch file contents in parallel (batched to avoid rate limits)
+  const BATCH_SIZE = 50;
+  const allFetched = [];
+  for (let i = 0; i < selected.length; i += BATCH_SIZE) {
+    const batch = selected.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map(async (f) => {
       try {
         const rawUrl = `${GITHUB_RAW}/${owner}/${repo}/${branch}/${f.path}`;
         const r = await fetch(rawUrl);
@@ -338,9 +358,11 @@ async function fetchGitHub(url) {
         return null;
       }
     })
-  );
+    );
+    allFetched.push(...results.filter(Boolean));
+  }
 
-  return files.filter(Boolean);
+  return allFetched;
 }
 
 // ── API Handler ──
@@ -359,6 +381,7 @@ export default async function handler(req, res) {
     if (github_url) {
       source = github_url;
       files = await fetchGitHub(github_url);
+      if (!files.length) throw new Error("Could not fetch any files from that repository.");
     } else if (code) {
       source = "pasted code";
       files = [["code.py", code]];
