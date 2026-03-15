@@ -70,19 +70,42 @@ function checkPiiHandling(files) {
 // ── Article 11: Technical Documentation ──
 
 function checkDocstrings(files) {
+  // Fixed in v1.1.0: handles multi-line signatures — skips past continuation
+  // lines before looking for docstrings
   let total = 0, documented = 0;
   for (const [_, content] of files) {
     const lines = content.split("\n");
-    for (let i = 0; i < lines.length; i++) {
+    let i = 0;
+    while (i < lines.length) {
       const s = lines[i].trim();
       if ((s.startsWith("def ") || s.startsWith("class ")) && !s.startsWith("def _")) {
         total++;
-        for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
-          const next = lines[j].trim();
+        // Skip past multi-line signatures to find the body
+        let j = i + 1;
+        if (s.startsWith("def ")) {
+          let fullSig = s;
+          while (j < lines.length && (
+            fullSig.trimEnd().endsWith("\\") ||
+            (fullSig.split("(").length - 1) > (fullSig.split(")").length - 1)
+          )) {
+            const nextLine = lines[j].trim();
+            if (fullSig.trimEnd().endsWith("\\")) {
+              fullSig = fullSig.trimEnd().slice(0, -1);
+            }
+            fullSig += " " + nextLine;
+            j++;
+          }
+        }
+        // Now look for docstring in the next few lines after the signature ends
+        for (let k = j; k < Math.min(j + 4, lines.length); k++) {
+          const next = lines[k].trim();
           if (next === "") continue;
           if (next.startsWith('"""') || next.startsWith("'''")) documented++;
           break;
         }
+        i = j;
+      } else {
+        i++;
       }
     }
   }
@@ -97,13 +120,36 @@ function checkDocstrings(files) {
 }
 
 function checkTypeHints(files) {
+  // Fixed in v1.1.0: handles multi-line signatures and expanded type recognition
+  // Matches fix in Python code_scanner.py v1.3.1 (github.com/airblackbox/scanner/issues/2)
+  const TYPE_PATTERN = /:\s*(str|int|float|bool|bytes|complex|object|type|None|list|dict|set|tuple|frozenset|List|Dict|Set|Tuple|FrozenSet|Optional|Union|Any|Type|Callable|Coroutine|Sequence|Iterable|Iterator|Generator|AsyncGenerator|Mapping|MutableMapping|MutableSequence|MutableSet|Literal|Annotated|TypeVar|TypeAlias|ClassVar|Final|Protocol|NamedTuple|TypedDict|Path|PurePath|UUID|Pattern|Match|datetime|date|time|timedelta|Decimal|[A-Z][a-zA-Z0-9_]*)/;
+
   let total = 0, typed = 0;
   for (const [_, content] of files) {
-    for (const line of content.split("\n")) {
-      const s = line.trim();
+    const lines = content.split("\n");
+    let i = 0;
+    while (i < lines.length) {
+      const s = lines[i].trim();
       if (s.startsWith("def ") && !s.startsWith("def _")) {
+        // Join multi-line signatures into one string
+        let fullSig = s;
+        let j = i + 1;
+        while (j < lines.length && (
+          fullSig.trimEnd().endsWith("\\") ||
+          (fullSig.split("(").length - 1) > (fullSig.split(")").length - 1)
+        )) {
+          const nextLine = lines[j].trim();
+          if (fullSig.trimEnd().endsWith("\\")) {
+            fullSig = fullSig.trimEnd().slice(0, -1);
+          }
+          fullSig += " " + nextLine;
+          j++;
+        }
         total++;
-        if (s.includes("->") || /:\s*(str|int|float|bool|list|dict|List|Dict|Optional|Any|Tuple)/.test(s)) typed++;
+        if (fullSig.includes("->") || TYPE_PATTERN.test(fullSig)) typed++;
+        i = j;
+      } else {
+        i++;
       }
     }
   }
