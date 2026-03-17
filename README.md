@@ -70,6 +70,8 @@ Validation accuracy: CrewAI 100%, LangFlow 83%, Quivr 83%. We share scan results
 
 ## Before and after
 
+![AIR Blackbox Before/After Demo](air-blackbox-demo.gif)
+
 Here's what a typical scan looks like for a LangChain agent before and after adding compliance infrastructure:
 
 **Before** — A standard LangChain agent with no compliance coverage:
